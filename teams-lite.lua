@@ -210,7 +210,7 @@ local console_commands = {
             local line = ""
 
             for _, team in pairs(script_data.teams) do
-                local num_members = #(team.members)
+                local num_members = table_size(team.members)
 
                 line = string.format("%s (%d members)", team.name, num_members)
                 if num_members > 0 then
@@ -309,6 +309,12 @@ local console_commands = {
             local team = get_team_by_name(team_name)
             if not team then
                 print_func(string.format("Team %s does not exist", team_name))
+                return
+            end
+
+            local current_team = get_team_by_player(player)
+            if current_team == team then
+                print_func(string.format("You are already in team %s", team.name))
                 return
             end
 
