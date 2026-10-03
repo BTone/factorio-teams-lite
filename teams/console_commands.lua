@@ -64,7 +64,7 @@ end
 ---@class ConsoleCommand
 ---@field name string The name of the command
 ---@field help string The help text for the command
----@field handler fun(data: CustomCommandData): string? The handler function for the command
+---@field handler fun(data: CustomCommandData): string | string[] | nil The handler function for the command
 
 ---@type ConsoleCommand[]
 local console_commands = {
@@ -94,7 +94,7 @@ local console_commands = {
                 end
             end
 
-            return table.concat(lines, "\n")
+            return lines
         end
     },
     {
@@ -111,7 +111,7 @@ local console_commands = {
             assert_team_name(team_name)
             ---@cast team_name string
 
-            if  manager:get_team_by_name(team_name) then
+            if manager:get_team_by_name(team_name) then
                 return
             end
 
@@ -222,7 +222,7 @@ local console_commands = {
                 table.insert(lines, string.format("Ceasefires: %s", table.concat(ceasefires, ", ")))
             end
 
-            return table.concat(lines, "\n")
+            return lines
         end
     },
     {
@@ -317,12 +317,15 @@ return {
             commands.add_command(command.name, command.help, function(data)
                 local print_func = get_print_func(data)
                 local success, result = pcall(command.handler, data)
-                if success then
-                    if result then
+
+                if result then
+                    if type(result) == "table" then
+                        for _, line in pairs(result) do
+                            print_func(line)
+                        end
+                    else
                         print_func(result)
                     end
-                else
-                    print_func("Error: " .. result)
                 end
             end)
         end

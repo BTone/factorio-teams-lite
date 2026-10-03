@@ -13,6 +13,47 @@ local teams_storage = {
     initialized = false,
 }
 
+local function migrate()
+    local teams_lite = storage.teams_lite
+    if not teams_lite then
+        return
+    end
+
+    game.print("Migrating Teams Lite to Teams...")
+    storage.teams_lite = nil
+
+    local default_team = teams_lite.default_team
+    local teams = teams_lite.teams
+
+    local manager = Manager.instance()
+
+    if not teams then
+        goto skip
+    end
+
+    for _, team in pairs(teams) do
+        if team == default_team then
+            goto continue
+        end
+
+        -- Do something with each team, e.g., create it in the new system
+        game.print(string.format("Migrating team: %s...", team.name))
+        local new_team = manager:create_team(team.name, team.builtin, team.force)
+        for player_index, player in pairs(team.members) do
+            if teams_utils.is_valid(player) then
+                ---@cast player LuaPlayer
+                manager:add_member(player, new_team)
+                game.print(string.format("Migrated player %s", player.name))
+            end
+        end
+
+        ::continue::
+    end
+
+    ::skip::
+    game.print("Migration complete.")
+end
+
 local function initialize()
     local manager = Manager.instance()
     teams_storage.manager = manager
@@ -24,9 +65,13 @@ local function initialize()
 
     storage.teams = teams_storage
 
+    if storage.teams_lite then
+        migrate()
+    end
+
     teams_storage.initialized = true
 
-    game.print("Teams Lite initialized")
+    game.print("Teams initialized")
 end
 
 ---@param event EventData.on_player_joined_game
