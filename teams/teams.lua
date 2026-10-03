@@ -101,6 +101,9 @@ local teams = {}
 ---Load mod data from storage
 teams.on_load = function()
     teams_storage = storage.teams or teams_storage
+    if teams_storage and teams_storage.manager then
+        Manager.set_instance(teams_storage.manager)
+    end
 end
 
 ---Initialize mod

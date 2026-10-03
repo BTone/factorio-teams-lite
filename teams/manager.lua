@@ -29,11 +29,7 @@ local instance = nil
 ---@return Manager
 function Manager.instance()
     if not instance then
-        if storage.teams and storage.teams.manager then
-            instance = storage.teams.manager
-        else
-            instance = new()
-        end
+        instance = new()
     end
     ---@cast instance Manager
     return instance
@@ -127,6 +123,15 @@ function Manager:add_member(player, team)
 
     team:add_member(player)
     self.team_members[player.index] = team
+end
+
+---Replace the current singleton instance of the Manager with a new instance. This is used when loaded from storage. Will do nothing if the instance is already set.
+---@param new_instance Manager
+function Manager.set_instance(new_instance)
+    if instance then
+        return
+    end
+    instance = new_instance
 end
 
 local manager = {}
