@@ -102,6 +102,14 @@ end
 
 ---@param event EventData.on_player_removed
 local function on_player_removed(event)
+    local player = game.get_player(event.player_index)
+    if not teams_utils.is_valid(player) then
+        return
+    end
+    ---@cast player LuaPlayer
+
+    local manager = Manager.instance()
+    manager:remove_member(player)
 end
 
 ---If necessary, initialize on the first tick after the mod is added to a save.
@@ -136,7 +144,7 @@ end
 teams.events = {
     [defines.events.on_player_created] = on_player_created,
     [defines.events.on_player_joined_game] = on_player_joined_game,
-    [defines.events.on_player_removed]
+    [defines.events.on_player_removed] = on_player_removed,
     [defines.events.on_tick] = on_tick
 }
 
