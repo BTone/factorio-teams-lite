@@ -1,4 +1,5 @@
 local registry = require("registry")
+local migrations = require("migrations")
 local teams_utils = require("teams_utils")
 local event_handler = require("event_handler")
 
@@ -45,10 +46,12 @@ local function on_forces_merged(event)
     registry.unregister(event.source_index, event.source_name)
 end
 
----If necessary, initialize on the first tick after the script is added to an existing save, where on_init never runs.
+---If necessary, initialize and migrate on the first tick after the script is added to an existing save, where
+---on_init never runs.
 ---@param event EventData.on_tick
 local function on_tick(event)
     registry.ensure()
+    migrations.run()
 end
 
 local teams = {}
