@@ -1,64 +1,76 @@
 local util = require("util")
-local manager = require("manager")
+local registry = require("registry")
 local teams_utils = require("teams_utils")
 
-local Manager = manager.Manager
+---Error thrown for expected failures, whose message is shown to the caller as-is.
+---@class UserError
+---@field user_error string
 
----Get the print function for a player or the global print function if no player is specified.
----@param data CustomCommandData
-local function get_print_func(data)
-    if data.player_index then
-        return game.players[data.player_index].print
-    end
-    return print
+---Abort the current command with a message for the caller.
+---@param message string
+local function fail(message)
+    error({ user_error = message })
 end
 
 ---Get player from command data, or nil if called from the server console.
 ---@param data CustomCommandData
 ---@return LuaPlayer?
-local function get_command_player(data)
-    return data.player_index and game.get_player(data.player_index)
+local function command_player(data)
+    return data.player_index and game.get_player(data.player_index) or nil
+end
+
+---Trim leading and trailing whitespace from a command parameter.
+---@param parameter string?
+---@return string
+local function trim(parameter)
+    return parameter and parameter:match("^%s*(.-)%s*$") or ""
 end
 
 ---@param player LuaPlayer?
-local function assert_command_admin(player)
-    if not teams_utils.is_valid_admin(player) then
-        error("You must be an admin to use this command", 0)
-    end
-end
-
----@param player LuaPlayer?
-local function assert_command_player(player)
+---@return LuaPlayer
+local function require_player(player)
     if not player then
-        error("You must be a player to use this command", 0)
+        fail("You must be a player to use this command")
+    end
+    ---@cast player LuaPlayer
+    return player
+end
+
+---Fail unless the caller is an admin. The server console (no player) counts as admin.
+---@param player LuaPlayer?
+local function require_admin(player)
+    if player and not teams_utils.is_valid_admin(player) then
+        fail("You must be an admin to use this command")
     end
 end
 
----@param team_name string?
-local function assert_team_name(team_name)
-    if not team_name or team_name == "" then
-        error("Missing team name", 0)
+---Find a visible team by name or fail.
+---@param parameter string?
+---@return TeamData
+local function require_team(parameter)
+    local name = trim(parameter)
+    if name == "" then
+        fail("Missing team name")
     end
-end
 
----@param manager Manager
----@param team_name string?
-local function assert_team_exists(manager, team_name)
-    assert_team_name(team_name)
-    ---@cast team_name string
-    local team = manager:get_team_by_name(team_name)
+    local team = registry.find(name)
     if not team then
-        error(string.format("Team %s does not exist", team_name), 0)
+        fail(string.format("Team %s does not exist", name))
     end
+    ---@cast team TeamData
+    return team
 end
 
----@param manager Manager
+---Get the caller's own visible team or fail.
 ---@param player LuaPlayer
-local function assert_player_in_team(manager, player)
-    local team = manager:get_team_by_player(player)
-    if not team then
-        error("You are not in a team", 0)
+---@return TeamData
+local function require_own_team(player)
+    local team = registry.of_player(player)
+    if not team or team.hidden then
+        fail("You are not in a team")
     end
+    ---@cast team TeamData
+    return team
 end
 
 ---@class ConsoleCommand
@@ -72,20 +84,18 @@ local console_commands = {
         name = "teams-list",
         help = "List teams",
         handler = function(data)
-            local manager = Manager.instance()
             local lines = {}
-            local line = ""
 
-            for _, team in pairs(manager.teams) do
-                local num_members = table_size(team.members)
+            for team in registry.each() do
+                local players = team.force.players
 
-                line = string.format("%s (%d members)", team.name, num_members)
-                if num_members > 0 then
+                local line = string.format("%s (%d members)", registry.name(team), #players)
+                if #players > 0 then
                     line = line .. ":"
                 end
                 table.insert(lines, line)
 
-                for _, member in pairs(team.members) do
+                for _, member in pairs(players) do
                     line = string.format("    - %s", member.name)
                     if member.admin then
                         line = line .. " (admin)"
@@ -99,115 +109,82 @@ local console_commands = {
     },
     {
         name = "teams-create",
-        help = "Create a new team",
+        help = "<name> - Create a new team",
         handler = function(data)
-            local player = get_command_player(data)
-            if player then
-                assert_command_admin(player)
+            require_admin(command_player(data))
+
+            local team, err = registry.create(trim(data.parameter))
+            if not team then
+                fail(err --[[@as string]])
             end
+            ---@cast team TeamData
 
-            local manager = Manager.instance()
-            local team_name = data.parameter
-            assert_team_name(team_name)
-            ---@cast team_name string
-
-            if manager:get_team_by_name(team_name) then
-                return
-            end
-
-            manager:create_team(team_name)
-            return string.format("Team %s created", team_name)
+            return string.format("Team %s created", registry.name(team))
         end
     },
     {
         name = "teams-delete",
-        help = "Delete a team",
+        help = "<team> - Delete a team, moving its members to the default team",
         handler = function(data)
-            local player = get_command_player(data)
-            if player then
-                assert_command_admin(player)
+            require_admin(command_player(data))
+
+            local team = require_team(data.parameter)
+            local name = registry.name(team)
+
+            local ok, err = registry.delete(team)
+            if not ok then
+                fail(err --[[@as string]])
             end
 
-            local manager = Manager.instance()
-            local team_name = data.parameter
-            assert_team_exists(manager, team_name)
-            ---@cast team_name string
-            local team = manager:get_team_by_name(team_name)
-            ---@cast team Team
-
-            if team.builtin then
-                error(string.format("Team %s is a built-in team and cannot be deleted", team_name), 0)
-            end
-
-            manager:delete_team(team)
-            return string.format("Team %s deleted", team_name)
+            return string.format("Team %s deleted", name)
         end
     },
     {
         name = "teams-join",
-        help = "Join a team",
+        help = "<team> - Join a team",
         handler = function(data)
-            local player = get_command_player(data)
-            assert_command_player(player)
-            ---@cast player LuaPlayer
+            local player = require_player(command_player(data))
+            local team = require_team(data.parameter)
 
-            local manager = Manager.instance()
-            local team_name = data.parameter
-            assert_team_exists(manager, team_name)
-            ---@cast team_name string
-            local team = manager:get_team_by_name(team_name)
-            ---@cast team Team
-
-            local current_team = manager:get_team_by_player(player)
-            if current_team == team then
+            if registry.of_player(player) == team then
                 return
             end
 
-            manager:add_member(player, team)
-            return string.format("Player %s joined team %s", player.name, team.name)
+            player.force = team.force
+            return string.format("Player %s joined team %s", player.name, registry.name(team))
         end
     },
     {
         name = "teams-set-spawn",
         help = "Set the spawn point for your team",
         handler = function(data)
-            local player = get_command_player(data)
-            assert_command_admin(player)
-            ---@cast player LuaPlayer
-
-            local manager = Manager.instance()
-            assert_player_in_team(manager, player)
-            local team = manager:get_team_by_player(player)
-            ---@cast team Team
+            local player = require_player(command_player(data))
+            require_admin(player)
+            local team = require_own_team(player)
 
             local spawn_position = player.position
             team.force.set_spawn_position(spawn_position, player.surface)
-            return string.format("Spawn point for team %s set to %s", team.name, util.positiontostr(spawn_position))
+            return string.format("Spawn point for team %s set to %s", registry.name(team),
+                util.positiontostr(spawn_position))
         end
     },
     {
         name = "teams-diplomacy",
         help = "Show diplomacy status between our team and other teams",
         handler = function(data)
-            local player = get_command_player(data)
-            assert_command_player(player)
-            ---@cast player LuaPlayer
-
-            local manager = Manager.instance()
-            assert_player_in_team(manager, player)
-            local team = manager:get_team_by_player(player)
-            ---@cast team Team
+            local player = require_player(command_player(data))
+            local team = require_own_team(player)
 
             local friends = {}
             local ceasefires = {}
 
-            for _, other_team in pairs(manager.teams) do
+            for other_team in registry.each() do
                 if other_team ~= team then
                     if team.force.is_friend(other_team.force) then
-                        table.insert(friends, other_team.name)
+                        table.insert(friends, registry.name(other_team))
                     end
                     if team.force.get_cease_fire(other_team.force) then
-                        table.insert(ceasefires, other_team.name)
+                        table.insert(ceasefires, registry.name(other_team))
                     end
                 end
             end
@@ -227,105 +204,97 @@ local console_commands = {
     },
     {
         name = "teams-toggle-friend",
-        help = "Toggle friendship with another team",
+        help = "<team> - Toggle friendship with another team",
         handler = function(data)
-            local player = get_command_player(data)
-            assert_command_admin(player)
-            ---@cast player LuaPlayer
-
-            local manager = Manager.instance()
-            assert_player_in_team(manager, player)
-            local team = manager:get_team_by_player(player)
-            ---@cast team Team
-
-            local other_team_name = data.parameter
-            assert_team_exists(manager, other_team_name)
-            ---@cast other_team_name string
-            local other_team = manager:get_team_by_name(other_team_name)
-            ---@cast other_team Team
+            local player = require_player(command_player(data))
+            require_admin(player)
+            local team = require_own_team(player)
+            local other_team = require_team(data.parameter)
 
             if team == other_team then
                 return
             end
 
-            local status = team.force.is_friend(other_team.force)
-            local new_status = not status
+            local new_status = not team.force.is_friend(other_team.force)
             team.force.set_friend(other_team.force, new_status)
 
-            return string.format("Team %s is %s friends with team %s", team.name, new_status and "now" or "no longer",
-                other_team.name)
+            return string.format("Team %s is %s friends with team %s", registry.name(team),
+                new_status and "now" or "no longer", registry.name(other_team))
         end
     },
     {
         name = "teams-toggle-ceasefire",
-        help = "Toggle cease-fire with another team",
+        help = "<team> - Toggle cease-fire with another team",
         handler = function(data)
-            local player = get_command_player(data)
-            assert_command_admin(player)
-            ---@cast player LuaPlayer
-
-            local manager = Manager.instance()
-            assert_player_in_team(manager, player)
-            local team = manager:get_team_by_player(player)
-            ---@cast team Team
-
-            local other_team_name = data.parameter
-            assert_team_exists(manager, other_team_name)
-            ---@cast other_team_name string
-            local other_team = manager:get_team_by_name(other_team_name)
-            ---@cast other_team Team
+            local player = require_player(command_player(data))
+            require_admin(player)
+            local team = require_own_team(player)
+            local other_team = require_team(data.parameter)
 
             if team == other_team then
                 return
             end
 
-            local status = team.force.get_cease_fire(other_team.force)
-            local new_status = not status
+            local new_status = not team.force.get_cease_fire(other_team.force)
             team.force.set_cease_fire(other_team.force, new_status)
 
-            return string.format("Team %s is %s ceasing fire with team %s", team.name,
-                new_status and "now" or "no longer",
-                other_team.name)
+            return string.format("Team %s is %s ceasing fire with team %s", registry.name(team),
+                new_status and "now" or "no longer", registry.name(other_team))
         end
     },
     {
         name = "teams-toggle-chart",
         help = "Toggle chart sharing",
         handler = function(data)
-            local player = get_command_player(data)
-            assert_command_admin(player)
-            ---@cast player LuaPlayer
+            local player = require_player(command_player(data))
+            require_admin(player)
+            local team = require_own_team(player)
 
-            local manager = Manager.instance()
-            assert_player_in_team(manager, player)
-            local team = manager:get_team_by_player(player)
-            ---@cast team Team
-
-            local status = team.force.share_chart
-            local new_status = not status
+            local new_status = not team.force.share_chart
             team.force.share_chart = new_status
 
-            return string.format("Team %s is %s sharing chart", team.name, new_status and "now" or "no longer")
+            return string.format("Team %s is %s sharing chart", registry.name(team),
+                new_status and "now" or "no longer")
         end
-    }
-
+    },
 }
+
+---Pass user errors through untouched; turn anything else into a traceback for the log.
+---@param err any
+---@return UserError | { internal: string }
+local function on_error(err)
+    if type(err) == "table" and err.user_error then
+        return err
+    end
+    return { internal = debug.traceback(tostring(err), 2) }
+end
 
 return {
     add_commands = function()
         for _, command in pairs(console_commands) do
             commands.add_command(command.name, command.help, function(data)
-                local print_func = get_print_func(data)
-                local success, result = pcall(command.handler, data)
+                local player = command_player(data)
+                local print_func = player and player.print or print
 
-                if result then
-                    if type(result) == "table" then
-                        for _, line in pairs(result) do
-                            print_func(line)
-                        end
+                registry.ensure()
+                local ok, result = xpcall(command.handler, on_error, data)
+
+                if not ok then
+                    if result.user_error then
+                        print_func(result.user_error)
                     else
-                        print_func(result)
+                        log(string.format("Error in /%s: %s", command.name, result.internal))
+                        print_func("Internal error, see the server log for details")
                     end
+                    return
+                end
+
+                if type(result) == "table" then
+                    for _, line in pairs(result) do
+                        print_func(line)
+                    end
+                elseif result then
+                    print_func(result)
                 end
             end)
         end

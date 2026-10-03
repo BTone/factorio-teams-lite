@@ -1,7 +1,7 @@
 ---Check if LuaEntity / LuaPlayer is valid
 ---@param entity LuaEntity | LuaPlayer | nil
 ---@return boolean
-function is_valid(entity)
+local function is_valid(entity)
     if entity and entity.valid then
         return true
     end
@@ -11,7 +11,7 @@ end
 ---Check if player is a valid admin
 ---@param player LuaPlayer?
 ---@return boolean
-function is_valid_admin(player)
+local function is_valid_admin(player)
     return is_valid(player) and player.admin
 end
 

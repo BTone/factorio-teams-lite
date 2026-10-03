@@ -1,90 +1,6 @@
-local manager = require("manager")
+local registry = require("registry")
 local teams_utils = require("teams_utils")
 local event_handler = require("event_handler")
-
-local Manager = manager.Manager
-
----Persistent mod data.
-local teams_storage = {
-    ---@type Manager?
-    manager = nil,
-
-    ---Whether the mod has been initialized
-    initialized = false,
-}
-
-local function migrate()
-    local teams_lite = storage.teams_lite
-    if not teams_lite then
-        return
-    end
-
-    game.print("Migrating Teams Lite to Teams...")
-    storage.teams_lite = nil
-
-    local default_team = teams_lite.default_team
-    local teams = teams_lite.teams
-
-    local manager = Manager.instance()
-
-    if not teams then
-        goto skip
-    end
-
-    for _, team in pairs(teams) do
-        if team == default_team then
-            goto continue
-        end
-
-        -- Do something with each team, e.g., create it in the new system
-        game.print(string.format("Migrating team: %s...", team.name))
-        local new_team = manager:create_team(team.name, team.builtin, team.force)
-        for player_index, player in pairs(team.members) do
-            if teams_utils.is_valid(player) then
-                ---@cast player LuaPlayer
-                manager:add_member(player, new_team)
-                game.print(string.format("Migrated player %s", player.name))
-            end
-        end
-
-        ::continue::
-    end
-
-    ::skip::
-    game.print("Migration complete.")
-end
-
-local function initialize()
-    local manager = Manager.instance()
-    teams_storage.manager = manager
-
-    -- Add existing players to the default team
-    for _, player in pairs(game.players) do
-        manager:add_member(player, manager.default_team)
-    end
-
-    storage.teams = teams_storage
-
-    if storage.teams_lite then
-        migrate()
-    end
-
-    teams_storage.initialized = true
-
-    game.print("Teams initialized")
-end
-
----@param event EventData.on_player_created
-local function on_player_created(event)
-    local player = game.get_player(event.player_index)
-    if not teams_utils.is_valid(player) then
-        return
-    end
-    ---@cast player LuaPlayer
-
-    local manager = Manager.instance()
-    manager:add_member(player, manager.default_team)
-end
 
 ---@param event EventData.on_player_joined_game
 local function on_player_joined_game(event)
@@ -100,52 +16,54 @@ local function on_player_joined_game(event)
     end
 end
 
----@param event EventData.on_player_removed
-local function on_player_removed(event)
-    local player = game.get_player(event.player_index)
-    if not teams_utils.is_valid(player) then
+---A player leaving a team loses their team admin status, however they were moved.
+---@param event EventData.on_player_changed_force
+local function on_player_changed_force(event)
+    registry.ensure()
+    if not event.force.valid then
         return
     end
-    ---@cast player LuaPlayer
 
-    local manager = Manager.instance()
-    manager:remove_member(player)
+    local old_team = registry.get(event.force)
+    if old_team then
+        old_team.admins[event.player_index] = nil
+    end
 end
 
----If necessary, initialize on the first tick after the mod is added to a save.
+---@param event EventData.on_player_removed
+local function on_player_removed(event)
+    registry.ensure()
+    for team in registry.each(true) do
+        team.admins[event.player_index] = nil
+    end
+end
+
+---Clean up after forces merged outside of `registry.delete`, e.g. by another script or a console command.
+---@param event EventData.on_forces_merged
+local function on_forces_merged(event)
+    registry.ensure()
+    registry.unregister(event.source_index, event.source_name)
+end
+
+---If necessary, initialize on the first tick after the script is added to an existing save, where on_init never runs.
 ---@param event EventData.on_tick
 local function on_tick(event)
-    if not teams_storage.initialized then
-        initialize()
-    end
+    registry.ensure()
 end
 
 local teams = {}
 
----Load mod data from storage
-teams.on_load = function()
-    teams_storage = storage.teams or teams_storage
-    if teams_storage and teams_storage.manager then
-        Manager.set_instance(teams_storage.manager)
-    end
-end
-
----Initialize mod
 teams.on_init = function()
-    --If already initialized, just call on_load
-    if storage.teams then
-        teams.on_load()
-        return
-    end
-    initialize()
+    registry.ensure()
 end
 
 ---@type event_handler.events
 teams.events = {
-    [defines.events.on_player_created] = on_player_created,
     [defines.events.on_player_joined_game] = on_player_joined_game,
+    [defines.events.on_player_changed_force] = on_player_changed_force,
     [defines.events.on_player_removed] = on_player_removed,
-    [defines.events.on_tick] = on_tick
+    [defines.events.on_forces_merged] = on_forces_merged,
+    [defines.events.on_tick] = on_tick,
 }
 
 event_handler.add_lib(require("console_commands"))
